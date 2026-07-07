@@ -20,6 +20,14 @@ on:
         description: 'Comma-separated list of extra packages to include'
         required: true
         default: 'apt,ca-certificates'
+      gzip_level:
+        description: 'gzip compression level (1-9)'
+        required: true
+        default: '1'
+      xz_level:
+        description: 'xz compression level (0-9)'
+        required: true
+        default: '0'
       debian_suite:
         description: 'Debian suite name'
         required: true
@@ -64,6 +72,8 @@ jobs:
       VARIANT: "${{ github.event.inputs.variant || 'minbase' }}"
       ARCH: "${{ github.event.inputs.arch || 'arm64' }}"
       INCLUDE: "${{ github.event.inputs.include || 'apt,ca-certificates' }}"
+      GZIP_LEVEL: "${{ github.event.inputs.gzip_level || '1' }}"
+      XZ_LEVEL: "${{ github.event.inputs.xz_level || '0' }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -119,10 +129,10 @@ jobs:
         id: compress
         run: |
           TARFILE="${{ steps.build.outputs.tarfile }}"
-          echo "Compressing with gzip..."
-          gzip -k "${TARFILE}"
-          echo "Compressing with xz (-T0)..."
-          xz -T0 -k "${TARFILE}"
+          echo "Compressing with gzip (-${{ env.GZIP_LEVEL }})..."
+          gzip -${{ env.GZIP_LEVEL }} -k "${TARFILE}"
+          echo "Compressing with xz (-T0 -${{ env.XZ_LEVEL }})..."
+          xz -T0 -${{ env.XZ_LEVEL }} -k "${TARFILE}"
           rm -f "${TARFILE}"
           echo "gzfile=${TARFILE}.gz" >> "$GITHUB_OUTPUT"
           echo "xzfile=${TARFILE}.xz" >> "$GITHUB_OUTPUT"

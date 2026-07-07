@@ -48,6 +48,8 @@ git push origin v1.0.0
 | `variant` | mmdebstrap variant；设为 `default` 则省略 `--variant` | `minbase` |
 | `arch` | 目标架构 | `arm64` |
 | `include` | 额外预装的包（逗号分隔） | `apt,ca-certificates` |
+| `gzip_level` | gzip 压缩级别（1-9） | `1` |
+| `xz_level` | xz 压缩级别（0-9） | `0` |
 | `debian_suite` | Debian 版本代号 | `trixie` |
 | `debian_mirror` | Debian 镜像源 | `http://deb.debian.org/debian` |
 | `debian_components` | Debian 组件（逗号分隔） | `main,contrib,non-free,non-free-firmware` |
