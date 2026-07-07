@@ -1,0 +1,181 @@
+name: Build and Release rootfs (Debian + Ubuntu LTS)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'mmdebstrap variant; use default to omit --variant'
+        required: true
+        default: 'minbase'
+      arch:
+        description: 'Target architecture'
+        required: true
+        default: 'arm64'
+      include:
+        description: 'Comma-separated list of extra packages to include'
+        required: true
+        default: 'apt,ca-certificates'
+      debian_suite:
+        description: 'Debian suite name'
+        required: true
+        default: 'trixie'
+      debian_mirror:
+        description: 'Debian mirror URL'
+        required: true
+        default: 'http://deb.debian.org/debian'
+      debian_components:
+        description: 'Debian components (comma-separated)'
+        required: true
+        default: 'main,contrib,non-free,non-free-firmware'
+      ubuntu_suite:
+        description: 'Ubuntu suite name'
+        required: true
+        default: 'resolute'
+      ubuntu_mirror:
+        description: 'Ubuntu mirror URL'
+        required: true
+        default: 'http://ports.ubuntu.com/ubuntu-ports'
+      ubuntu_components:
+        description: 'Ubuntu components (comma-separated)'
+        required: true
+        default: 'main,restricted,universe,multiverse'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            suite: ${{ github.event.inputs.debian_suite || 'trixie' }}
+            mirror: ${{ github.event.inputs.debian_mirror || 'http://deb.debian.org/debian' }}
+            components: ${{ github.event.inputs.debian_components || 'main,contrib,non-free,non-free-firmware' }}
+          - distro: ubuntu
+            suite: ${{ github.event.inputs.ubuntu_suite || 'resolute' }}
+            mirror: ${{ github.event.inputs.ubuntu_mirror || 'http://ports.ubuntu.com/ubuntu-ports' }}
+            components: ${{ github.event.inputs.ubuntu_components || 'main,restricted,universe,multiverse' }}
+    env:
+      VARIANT: "${{ github.event.inputs.variant || 'minbase' }}"
+      ARCH: "${{ github.event.inputs.arch || 'arm64' }}"
+      INCLUDE: "${{ github.event.inputs.include || 'apt,ca-certificates' }}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mmdebstrap xz-utils debian-archive-keyring ubuntu-keyring
+
+      - name: Build rootfs with mmdebstrap
+        id: build
+        run: |
+          BASENAME="${{ matrix.distro }}-${{ matrix.suite }}-${{ env.VARIANT }}-${{ env.ARCH }}"
+          TARFILE="${BASENAME}.tar"
+          echo "Building ${{ matrix.distro }} ${{ matrix.suite }} (${{ env.VARIANT }}) for ${{ env.ARCH }}..."
+          MMDEBSTRAP_ARGS=()
+          if [[ "${{ env.VARIANT }}" != "default" ]]; then
+            MMDEBSTRAP_ARGS+=(--variant="${{ env.VARIANT }}")
+          fi
+          sudo mmdebstrap \
+            "${MMDEBSTRAP_ARGS[@]}" \
+            --architecture="${{ env.ARCH }}" \
+            --components="${{ matrix.components }}" \
+            --include=${{ env.INCLUDE }} \
+            "${{ matrix.suite }}" \
+            "${TARFILE}" \
+            "${{ matrix.mirror }}"
+          echo "tarfile=${TARFILE}" >> "$GITHUB_OUTPUT"
+          echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract package manifest
+        id: manifest
+        run: |
+          TARFILE="${{ steps.build.outputs.tarfile }}"
+          MANIFEST="${{ steps.build.outputs.basename }}-manifest.txt"
+          echo "Extracting dpkg status from tar..."
+          tar xf "${TARFILE}" ./var/lib/dpkg/status -O | \
+            awk '/^Package:/{pkg=$2} /^Version:/{ver=$2; print pkg "\t" ver}' | \
+            sort > "${MANIFEST}"
+          COUNT=$(wc -l < "${MANIFEST}")
+          echo "manifest=${MANIFEST}" >> "$GITHUB_OUTPUT"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=${{ matrix.distro }} package count::Installed ${COUNT} packages"
+          echo "### ${{ matrix.distro }} ${{ matrix.suite }} installed packages (${COUNT})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -30 "${MANIFEST}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${COUNT}" -gt 30 ]; then
+            echo "*... and $((COUNT - 30)) more*" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Compress tarball (multiple formats)
+        id: compress
+        run: |
+          TARFILE="${{ steps.build.outputs.tarfile }}"
+          echo "Compressing with gzip..."
+          gzip -k "${TARFILE}"
+          echo "Compressing with xz (-T0)..."
+          xz -T0 -k "${TARFILE}"
+          rm -f "${TARFILE}"
+          echo "gzfile=${TARFILE}.gz" >> "$GITHUB_OUTPUT"
+          echo "xzfile=${TARFILE}.xz" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SHA256 checksums
+        id: checksum
+        run: |
+          BASENAME="${{ steps.build.outputs.basename }}"
+          sha256sum ${BASENAME}.tar.* > "${BASENAME}.sha256"
+          echo "sha256=${BASENAME}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.basename }}
+          path: |
+            ${{ steps.compress.outputs.gzfile }}
+            ${{ steps.compress.outputs.xzfile }}
+            ${{ steps.checksum.outputs.sha256 }}
+            ${{ steps.manifest.outputs.manifest }}
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh *.tar.gz *.tar.xz *.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.tar.xz
+            *.sha256
+            *-manifest.txt
+          name: "Rootfs ${{ github.ref_name || github.run_id }}"
+          tag_name: ${{ github.ref_name || format('build-{0}', github.run_id) }}
+          generate_release_notes: true
+          body: |
+            Parallel rootfs builds for Debian and Ubuntu on native ARM64.
+
+            | Distro | Suite | Variant | Architecture |
+            |--------|-------|---------|--------------|
+            | Debian | ${{ github.event.inputs.debian_suite || 'trixie' }} | ${{ github.event.inputs.variant || 'minbase' }} | ${{ github.event.inputs.arch || 'arm64' }} |
+            | Ubuntu | ${{ github.event.inputs.ubuntu_suite || 'resolute' }} | ${{ github.event.inputs.variant || 'minbase' }} | ${{ github.event.inputs.arch || 'arm64' }} |
+
+            Built with `mmdebstrap`, compressed with `gzip` and `xz`.
