@@ -129,6 +129,7 @@ jobs:
         id: compress
         run: |
           TARFILE="${{ steps.build.outputs.tarfile }}"
+          sudo chown $(id -un):$(id -gn) "${TARFILE}"
           echo "Compressing with gzip (-${{ env.GZIP_LEVEL }})..."
           gzip -${{ env.GZIP_LEVEL }} -k "${TARFILE}"
           echo "Compressing with xz (-T0 -${{ env.XZ_LEVEL }})..."
